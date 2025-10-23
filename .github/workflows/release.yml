@@ -1,4 +1,4 @@
-name: Auto Release from URLs (aria2c)
+name: Auto Release from URLs (aria2c Optimized)
 
 on:
   workflow_dispatch:
@@ -28,11 +28,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y aria2
 
-      # Step 3: Check gh CLI
+      # Step 3: Check GitHub CLI
       - name: Check gh CLI
         run: gh --version
 
-      # Step 4: Create or update release
+      # Step 4: Create or update the release
       - name: Create or update release
         run: |
           gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || \
@@ -42,26 +42,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Step 5: Download via aria2c & upload
+      # Step 5: Download & upload files using aria2c with retries
       - name: Download & upload files with aria2c
         run: |
           mkdir -p tmp
           while IFS= read -r url; do
             [ -z "$url" ] && continue
 
-            # Determine file name from headers or fallback
-            name=$(aria2c --head --quiet "$url" | grep -i 'Content-Disposition:' | \
-                  sed -n 's/.*filename=["'\'']\?\([^"'\'';]*\).*/\1/p' | tail -n1)
-            if [ -z "$name" ]; then
-              name=$(basename "${url%%\?*}")
-            fi
-            echo "⬇️  Downloading $name from $url"
+            echo "⬇️ Downloading from: $url"
 
-            # Download with aria2c, max 16 connections, 16 segments, retry 10 times
-            aria2c -x16 -s16 -j1 -c --retry-wait=5 --max-tries=10 \
-              -d tmp -o "$name" "$url"
+            # Download with multi-threading, retry, and preserve filename from server headers
+            aria2c -x16 -s16 -j1 -c \
+              --retry-wait=5 --max-tries=10 \
+              --remote-name --auto-file-renaming=false \
+              -d tmp "$url"
 
-            # Upload to GitHub Release
+            # Determine filename (aria2c saves as server-provided or URL basename)
+            name=$(ls tmp | head -n1)
+
+            echo "→ Uploading $name to GitHub Release"
             gh release upload "${{ inputs.tag }}" "tmp/$name" --clobber
             rm -f "tmp/$name"
             echo "✅ Uploaded $name successfully."
