@@ -1,45 +1,57 @@
 name: Auto Release from URLs
 
 on:
-  workflow_dispatch:  # allows manual trigger
-  push:
-    tags:
-      - 'v*'  # or trigger when you push a version tag like v1.0.0
+  # Allow manual trigger from the Actions tab
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name for release (e.g. v1.0.0)'
+        required: true
+      release_name:
+        description: 'Optional release name (defaults to tag name)'
+        required: false
+
+permissions:
+  contents: write  # Required for creating releases
 
 jobs:
   release:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repository
+      # Step 1: Checkout the repository
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Read URLs and download files
+      # Step 2: Download files from urls.txt
       - name: Download files from urls.txt
         run: |
           mkdir downloads
           while IFS= read -r url; do
+            [ -z "$url" ] && continue  # skip empty lines
             echo "Downloading $url"
             curl -L "$url" -o "downloads/$(basename "$url")"
           done < urls.txt
+          echo "Downloaded files:"
+          ls -lh downloads/
 
       # Step 3: Create a GitHub release
-      - name: Create Release
+      - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "Release ${{ github.ref_name }}"
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.release_name || inputs.tag }}
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Step 4: Upload downloaded files as release assets
-      - name: Upload assets
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag }}
           files: downloads/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
