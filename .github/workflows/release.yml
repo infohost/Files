@@ -18,13 +18,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Checkout repository
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 2: Check gh CLI
       - name: Check gh CLI
         run: gh --version
 
-      # Create or reuse release
+      # Step 3: Create or update release
       - name: Create or update release
         run: |
           gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || \
@@ -34,12 +36,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Stream & upload files with retry
+      # Step 4: Stream & upload files with retry
       - name: Stream and upload files with retry
         run: |
           mkdir -p tmp
           while IFS= read -r url; do
             [ -z "$url" ] && continue
+
+            # Extract filename from HTTP headers, fallback to basename
             name=$(curl -sIL -o - "$url" | grep -i 'content-disposition:' | \
                     sed -n 's/.*filename=["'\'']\?\([^"'\'';]*\).*/\1/p' | tail -n1)
             if [ -z "$name" ]; then
@@ -53,17 +57,22 @@ jobs:
 
             while [ $attempt -le $max_attempts ]; do
               echo "Attempt $attempt of $max_attempts..."
+              # Disable exit-on-error for curl
+              set +e
               curl -L "$url" -o "tmp/$name"
-              if [ $? -eq 0 ]; then
+              curl_exit=$?
+              set -e
+
+              if [ $curl_exit -eq 0 ]; then
                 gh release upload "${{ inputs.tag }}" "tmp/$name" --clobber
                 rm -f "tmp/$name"
                 success=true
                 echo "✅ Uploaded $name successfully."
                 break
               else
-                echo "⚠️ Attempt $attempt failed. Retrying..."
+                echo "⚠️ Attempt $attempt failed (curl exit $curl_exit). Retrying..."
                 rm -f "tmp/$name"
-                sleep $((attempt * 5))  # exponential backoff (5s, 10s, 15s, ...)
+                sleep $((attempt * 5))  # exponential backoff
                 attempt=$((attempt + 1))
               fi
             done
