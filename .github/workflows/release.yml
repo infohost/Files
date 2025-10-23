@@ -1,4 +1,4 @@
-name: Auto Release from URLs
+name: Auto Release from URLs (Stream Uploads)
 
 on:
   workflow_dispatch:
@@ -21,36 +21,36 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Download all URLs and preserve real filenames
-      - name: Download files from urls.txt
-        run: |
-          mkdir -p downloads
-          cd downloads
-          while IFS= read -r url; do
-            [ -z "$url" ] && continue
-            echo "Downloading $url"
-            curl -L -J -O "$url"
-          done < ../urls.txt
-          echo "Downloaded files:"
-          ls -lh
+      # Ensure gh CLI is available (usually preinstalled on GitHub-hosted runners)
+      - name: Check gh CLI
+        run: gh --version
 
-      # Create or update the release
-      - name: Create or update GitHub Release
-        id: create_release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          name: ${{ inputs.release_name || inputs.tag }}
-          draft: false
-          prerelease: false
+      # Step 1: Create or update the release
+      - name: Create or update release
+        run: |
+          gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || \
+          gh release create "${{ inputs.tag }}" \
+            --title "${{ inputs.release_name || inputs.tag }}" \
+            --notes "Automated release for tag ${{ inputs.tag }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Upload all downloaded files as release assets
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: downloads/*
+      # Step 2: Stream and upload each file directly
+      - name: Stream and upload files
+        run: |
+          while IFS= read -r url; do
+            [ -z "$url" ] && continue
+            echo "Uploading from $url ..."
+            # Fetch filename from header if possible
+            name=$(curl -sIL -o - "$url" | grep -i 'content-disposition:' | \
+                    sed -n 's/.*filename=["'\'']\?\([^"'\'';]*\).*/\1/p' | tail -n1)
+            if [ -z "$name" ]; then
+              name=$(basename "${url%%\?*}")  # fallback if header missing
+            fi
+            echo "→ Uploading as: $name"
+            # Stream directly from curl into gh release upload
+            curl -L "$url" | gh release upload "${{ inputs.tag }}" - \
+              --clobber --name "$name"
+          done < urls.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
