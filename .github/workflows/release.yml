@@ -1,4 +1,4 @@
-name: Auto Release from URLs (Safe Streaming)
+name: Auto Release from URLs (Retry Enabled)
 
 on:
   workflow_dispatch:
@@ -11,22 +11,20 @@ on:
         required: false
 
 permissions:
-  contents: write  # needed to create or update releases
+  contents: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repository
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Ensure GitHub CLI is available
       - name: Check gh CLI
         run: gh --version
 
-      # Step 3: Create or update the release
+      # Create or reuse release
       - name: Create or update release
         run: |
           gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || \
@@ -36,26 +34,44 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Step 4: Stream-style upload (one file at a time, minimal disk use)
-      - name: Stream and upload files from urls.txt
+      # Stream & upload files with retry
+      - name: Stream and upload files with retry
         run: |
           mkdir -p tmp
           while IFS= read -r url; do
             [ -z "$url" ] && continue
-            echo "⬇️  Downloading from: $url"
-
-            # Try to extract real filename from HTTP headers
             name=$(curl -sIL -o - "$url" | grep -i 'content-disposition:' | \
                     sed -n 's/.*filename=["'\'']\?\([^"'\'';]*\).*/\1/p' | tail -n1)
             if [ -z "$name" ]; then
-              name=$(basename "${url%%\?*}")  # fallback if no header
+              name=$(basename "${url%%\?*}")
             fi
-            echo "→ Uploading as: $name"
+            echo "⬇️  Downloading & uploading: $name"
 
-            # Download & upload sequentially (limits disk use)
-            curl -L "$url" -o "tmp/$name"
-            gh release upload "${{ inputs.tag }}" "tmp/$name" --clobber
-            rm -f "tmp/$name"
+            max_attempts=10
+            attempt=1
+            success=false
+
+            while [ $attempt -le $max_attempts ]; do
+              echo "Attempt $attempt of $max_attempts..."
+              curl -L "$url" -o "tmp/$name"
+              if [ $? -eq 0 ]; then
+                gh release upload "${{ inputs.tag }}" "tmp/$name" --clobber
+                rm -f "tmp/$name"
+                success=true
+                echo "✅ Uploaded $name successfully."
+                break
+              else
+                echo "⚠️ Attempt $attempt failed. Retrying..."
+                rm -f "tmp/$name"
+                sleep $((attempt * 5))  # exponential backoff (5s, 10s, 15s, ...)
+                attempt=$((attempt + 1))
+              fi
+            done
+
+            if [ "$success" = false ]; then
+              echo "❌ Failed to download/upload $name after $max_attempts attempts."
+              exit 1
+            fi
           done < urls.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
