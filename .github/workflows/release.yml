@@ -1,13 +1,13 @@
-name: Auto Release from URLs (aria2c Optimized)
+name: Auto Release from CSV URLs
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag name for release (e.g. v1.0.0)'
+        description: 'Tag name for release'
         required: true
       release_name:
-        description: 'Optional release name (defaults to tag name)'
+        description: 'Optional release name'
         required: false
 
 permissions:
@@ -18,21 +18,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repository
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Step 2: Install aria2
       - name: Install aria2
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y aria2
+        run: sudo apt-get update && sudo apt-get install -y aria2
 
-      # Step 3: Check GitHub CLI
       - name: Check gh CLI
         run: gh --version
 
-      # Step 4: Create or update the release
       - name: Create or update release
         run: |
           gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || \
@@ -42,28 +36,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Step 5: Download & upload files using aria2c with retries
-      - name: Download & upload files with aria2c
+      - name: Download & upload files from CSV
         run: |
           mkdir -p tmp
-          while IFS= read -r url; do
+          tail -n +2 files.csv | while IFS=, read -r filename url; do
             [ -z "$url" ] && continue
+            echo "⬇️ Downloading $filename from $url"
 
-            echo "⬇️ Downloading from: $url"
+            # Download with aria2c, retries, multi-threaded
+            aria2c -x16 -s16 -j1 -c --retry-wait=5 --max-tries=10 \
+              -d tmp -o "$filename" "$url"
 
-            # Download with multi-threading, retry, and preserve filename from server headers
-            aria2c -x16 -s16 -j1 -c \
-              --retry-wait=5 --max-tries=10 \
-              --remote-name --auto-file-renaming=false \
-              -d tmp "$url"
-
-            # Determine filename (aria2c saves as server-provided or URL basename)
-            name=$(ls tmp | head -n1)
-
-            echo "→ Uploading $name to GitHub Release"
-            gh release upload "${{ inputs.tag }}" "tmp/$name" --clobber
-            rm -f "tmp/$name"
-            echo "✅ Uploaded $name successfully."
-          done < urls.txt
+            # Upload to GitHub release
+            gh release upload "${{ inputs.tag }}" "tmp/$filename" --clobber
+            rm -f "tmp/$filename"
+            echo "✅ Uploaded $filename successfully."
+          done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
