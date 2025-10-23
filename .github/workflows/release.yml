@@ -1,4 +1,4 @@
-name: Auto Release from URLs (Retry Enabled)
+name: Auto Release from URLs (aria2c)
 
 on:
   workflow_dispatch:
@@ -22,11 +22,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Check gh CLI
+      # Step 2: Install aria2
+      - name: Install aria2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2
+
+      # Step 3: Check gh CLI
       - name: Check gh CLI
         run: gh --version
 
-      # Step 3: Create or update release
+      # Step 4: Create or update release
       - name: Create or update release
         run: |
           gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || \
@@ -36,51 +42,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Step 4: Stream & upload files with retry
-      - name: Stream and upload files with retry
+      # Step 5: Download via aria2c & upload
+      - name: Download & upload files with aria2c
         run: |
           mkdir -p tmp
           while IFS= read -r url; do
             [ -z "$url" ] && continue
 
-            # Extract filename from HTTP headers, fallback to basename
-            name=$(curl -sIL -o - "$url" | grep -i 'content-disposition:' | \
-                    sed -n 's/.*filename=["'\'']\?\([^"'\'';]*\).*/\1/p' | tail -n1)
+            # Determine file name from headers or fallback
+            name=$(aria2c --head --quiet "$url" | grep -i 'Content-Disposition:' | \
+                  sed -n 's/.*filename=["'\'']\?\([^"'\'';]*\).*/\1/p' | tail -n1)
             if [ -z "$name" ]; then
               name=$(basename "${url%%\?*}")
             fi
-            echo "⬇️  Downloading & uploading: $name"
+            echo "⬇️  Downloading $name from $url"
 
-            max_attempts=10
-            attempt=1
-            success=false
+            # Download with aria2c, max 16 connections, 16 segments, retry 10 times
+            aria2c -x16 -s16 -j1 -c --retry-wait=5 --max-tries=10 \
+              -d tmp -o "$name" "$url"
 
-            while [ $attempt -le $max_attempts ]; do
-              echo "Attempt $attempt of $max_attempts..."
-              # Disable exit-on-error for curl
-              set +e
-              curl -L "$url" -o "tmp/$name"
-              curl_exit=$?
-              set -e
-
-              if [ $curl_exit -eq 0 ]; then
-                gh release upload "${{ inputs.tag }}" "tmp/$name" --clobber
-                rm -f "tmp/$name"
-                success=true
-                echo "✅ Uploaded $name successfully."
-                break
-              else
-                echo "⚠️ Attempt $attempt failed (curl exit $curl_exit). Retrying..."
-                rm -f "tmp/$name"
-                sleep $((attempt * 5))  # exponential backoff
-                attempt=$((attempt + 1))
-              fi
-            done
-
-            if [ "$success" = false ]; then
-              echo "❌ Failed to download/upload $name after $max_attempts attempts."
-              exit 1
-            fi
+            # Upload to GitHub Release
+            gh release upload "${{ inputs.tag }}" "tmp/$name" --clobber
+            rm -f "tmp/$name"
+            echo "✅ Uploaded $name successfully."
           done < urls.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
