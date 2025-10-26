@@ -1,14 +1,7 @@
-name: Auto Release from CSV URLs
+name: Auto Multi-Tag Release from CSV
 
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag name for release'
-        required: true
-      release_name:
-        description: 'Optional release name'
-        required: false
 
 permissions:
   contents: write
@@ -18,39 +11,69 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Step 2: Install aria2
       - name: Install aria2
-        run: sudo apt-get update && sudo apt-get install -y aria2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2
 
+      # Step 3: Check gh CLI
       - name: Check gh CLI
         run: gh --version
 
-      - name: Create or update release
-        run: |
-          gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || \
-          gh release create "${{ inputs.tag }}" \
-            --title "${{ inputs.release_name || inputs.tag }}" \
-            --notes "Automated release for tag ${{ inputs.tag }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download & upload files from CSV
+      # Step 4: Process CSV and upload
+      - name: Process CSV and upload files
         run: |
           mkdir -p tmp
-          tail -n +2 files.csv | while IFS=, read -r filename url; do
+
+          # Skip CSV header line, iterate each row
+          tail -n +2 files.csv | while IFS=, read -r tag filename url; do
             [ -z "$url" ] && continue
-            echo "⬇️ Downloading $filename from $url"
 
-            # Download with aria2c, retries, multi-threaded
-            aria2c -x16 -s16 -j1 -c --retry-wait=5 --max-tries=10 \
-              -d tmp -o "$filename" "$url"
+            echo "🟦 Tag: $tag"
+            echo "⬇️  Downloading: $filename"
+            echo "🔗 URL: $url"
 
-            # Upload to GitHub release
-            gh release upload "${{ inputs.tag }}" "tmp/$filename" --clobber
+            # Ensure release exists or create it
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              echo "🆕 Creating release for tag $tag"
+              gh release create "$tag" \
+                --title "$tag" \
+                --notes "Automated release for tag $tag"
+            fi
+
+            # Download with retries and multi-threaded mode
+            attempt=1
+            max_attempts=10
+            success=false
+            while [ $attempt -le $max_attempts ]; do
+              echo "Attempt $attempt of $max_attempts..."
+              if aria2c -x16 -s16 -j1 -c --retry-wait=5 --max-tries=10 \
+                -d tmp -o "$filename" "$url"; then
+                success=true
+                break
+              fi
+              attempt=$((attempt + 1))
+              echo "⚠️  Download failed, retrying..."
+              sleep 5
+            done
+
+            if [ "$success" = false ]; then
+              echo "❌ Failed to download $filename after $max_attempts attempts."
+              continue
+            fi
+
+            # Upload file to the corresponding release
+            echo "⬆️  Uploading $filename to release $tag..."
+            gh release upload "$tag" "tmp/$filename" --clobber
             rm -f "tmp/$filename"
-            echo "✅ Uploaded $filename successfully."
+
+            echo "✅ Successfully uploaded $filename to release $tag."
+            echo "-----------------------------------------"
           done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
